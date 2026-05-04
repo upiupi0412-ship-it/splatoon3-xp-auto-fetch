@@ -1,8 +1,15 @@
 from fastapi import FastAPI
 import requests
 import re
+import time
 
 app = FastAPI()
+
+API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
+UTILS_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.py"
+
+# フォールバック（確実に動く）
+FALLBACK_HASH = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
 
 RULE_MAP = {
     "AREA": "area",
@@ -11,43 +18,44 @@ RULE_MAP = {
     "CLAM": "asari"
 }
 
-API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
+# =========================
+# 🔥 高速化ポイント①：Session使い回し
+# =========================
+session = requests.Session()
 
-# GitHub raw
-UTILS_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.py"
-
-# フォールバック（最悪これで動く）
-FALLBACK_HASH = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
+# =========================
+# 🔥 高速化ポイント②：ハッシュをメモリ保持
+# =========================
+cached_hash = FALLBACK_HASH
+last_hash_fetch = 0
+HASH_TTL = 60 * 60  # 1時間だけ更新
 
 
 def fetch_hash():
+    global cached_hash, last_hash_fetch
+
+    # TTL内なら再取得しない
+    if time.time() - last_hash_fetch < HASH_TTL:
+        return cached_hash
+
     try:
-        res = requests.get(UTILS_URL, timeout=10)
+        res = session.get(UTILS_URL, timeout=5)
         text = res.text
 
-        # translate_rid 辞書から抽出（最も安全）
         match = re.search(
             r"'XBattleHistoriesQuery'\s*:\s*'([a-f0-9]{64})'",
             text
         )
 
         if match:
-            return match.group(1)
-
-        # 予備パターン
-        match2 = re.search(
-            r"XBattleHistoriesQuery[^a-f0-9]*([a-f0-9]{64})",
-            text
-        )
-
-        if match2:
-            return match2.group(1)
+            cached_hash = match.group(1)
+            last_hash_fetch = time.time()
+            return cached_hash
 
     except Exception:
         pass
 
-    # 失敗時
-    return FALLBACK_HASH
+    return cached_hash  # fallback
 
 
 @app.get("/")
@@ -58,17 +66,14 @@ def root():
 @app.get("/xpower")
 def get_xpower(bullet: str):
     # =========================
-    # ハッシュ取得
+    # ハッシュ取得（ほぼ即時）
     # =========================
     hash_value = fetch_hash()
 
-    # =========================
-    # ヘッダ
-    # =========================
     headers = {
         "Authorization": f"Bearer {bullet}",
         "Accept-Language": "ja-JP",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5)",
         "X-Web-View-Ver": "10.0.0-88706e32",
         "Content-Type": "application/json",
         "x-nacountry": "JP",
@@ -87,10 +92,10 @@ def get_xpower(bullet: str):
     }
 
     # =========================
-    # APIリクエスト
+    # API呼び出し
     # =========================
     try:
-        r = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+        r = session.post(API_URL, headers=headers, json=payload, timeout=10)
     except Exception as e:
         return {"error": "request_failed", "detail": str(e)}
 
@@ -98,48 +103,27 @@ def get_xpower(bullet: str):
         return {
             "error": "http_error",
             "status": r.status_code,
-            "body": r.text[:500]
+            "body": r.text[:300]
         }
 
-    # =========================
-    # JSON
-    # =========================
     try:
         data = r.json()
     except Exception:
         return {
             "error": "json_parse_failed",
-            "raw": r.text[:500]
+            "raw": r.text[:300]
         }
 
+    # GraphQLエラー
     if "errors" in data:
         return {
             "error": "graphql_error",
             "detail": data["errors"]
         }
 
-    if not data.get("data"):
-        return {
-            "error": "no_data",
-            "raw": data
-        }
-
-    container = data["data"].get("xRankingContainer")
-
-    if not container:
-        return {
-            "error": "no_xranking",
-            "raw": data
-        }
-
-    season = container.get("currentSeason")
-
-    if not season:
-        return {
-            "error": "no_season",
-            "raw": data
-        }
-
+    # 安全に取り出し
+    container = data.get("data", {}).get("xRankingContainer", {})
+    season = container.get("currentSeason", {})
     nodes = season.get("xRankingEntries", {}).get("nodes", [])
 
     result = {
@@ -155,7 +139,7 @@ def get_xpower(bullet: str):
             result[RULE_MAP[rule]] = n.get("xPower")
 
     return {
-        "hash_used": hash_value,
         "xpower": result,
-        "count": len(nodes)
+        "count": len(nodes),
+        "hash": hash_value
     }
