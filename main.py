@@ -11,12 +11,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+GRAPHQL_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
+
 # =========================
-# base
+# root
 # =========================
 @app.get("/")
 def root():
-    return {"ok": True, "message": "s3s-style API (no GraphQL)"}
+    return {"ok": True, "message": "stable splatnet api running"}
 
 # =========================
 # main
@@ -33,19 +35,21 @@ async def xpower(req: Request):
     try:
         access_token = get_access_token(session_token)
 
-        # 🔥 GraphQL完全廃止
-        data = fetch_splatnet_history(access_token)
+        raw = fetch_xranking(access_token)
 
-        result = extract_xpower(data)
+        parsed = parse_safe(raw)
 
         return {
             "ok": True,
-            "xpower": result,
-            "raw": data
+            "xpower": parsed,
+            "raw": raw
         }
 
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 # =========================
 # auth
@@ -62,36 +66,55 @@ def get_access_token(session_token):
             "client_id": "71b963c1b7b6d119",
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer-session-token",
             "session_token": session_token
-        }
+        },
+        timeout=10
     )
 
     data = res.json()
 
     if "access_token" not in data:
-        raise Exception(data)
+        raise Exception(f"auth failed: {data}")
 
     return data["access_token"]
 
 # =========================
-# 🔥 ここが本体（GraphQLなし）
+# GraphQL（安定版）
 # =========================
-def fetch_splatnet_history(access_token):
+def fetch_xranking(access_token):
 
-    # ⚠️ S3S系で使われる“実データ系エンドポイント”
-    url = "https://api.lp1.av5ja.srv.nintendo.net/api/festivals"  # 安定寄りの例
+    # ⚠️ 重要：
+    # hashは固定せず「失敗しても返す」運用にする
+
+    payload = {
+        "variables": {},
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
+            }
+        }
+    }
 
     headers = {
         "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Nintendo Switch; OnlineLounge)",
-        "Accept": "application/json",
-        "Origin": "https://api.lp1.av5ja.srv.nintendo.net",
-        "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
+        "Accept": "application/json"
     }
 
-    res = requests.get(url, headers=headers, timeout=20)
+    res = requests.post(
+        GRAPHQL_URL,
+        headers=headers,
+        json=payload,
+        timeout=20
+    )
 
+    # 🔥 ここ重要：絶対に壊さない
     try:
-        return res.json()
+        return {
+            "status": res.status_code,
+            "json": res.json()
+        }
     except:
         return {
             "status": res.status_code,
@@ -99,17 +122,47 @@ def fetch_splatnet_history(access_token):
         }
 
 # =========================
-# XP抽出（安全ダミー構造）
+# safe parser
 # =========================
-def extract_xpower(data):
+def parse_safe(data):
 
-    # ⚠️ 実データ構造は環境で変わるため防御的解析
+    # まだ構造が未確定なので安全処理
 
     if not isinstance(data, dict):
         return None
 
-    # 仮解析（s3s風）
-    return {
-        "note": "structure depends on SplatNet response",
-        "keys": list(data.keys()) if isinstance(data, dict) else None
-    }
+    # GraphQL成功時だけ解析
+    j = data.get("json", {})
+
+    try:
+        nodes = (
+            j["data"]["xRankingContainer"]["currentSeason"]["xRankingEntries"]["nodes"]
+        )
+
+        result = {
+            "area": None,
+            "yagura": None,
+            "hoko": None,
+            "clam": None
+        }
+
+        for n in nodes:
+            rule = n.get("rule")
+            power = n.get("xPower")
+
+            if rule == "AREA":
+                result["area"] = power
+            elif rule == "LOFT":
+                result["hoko"] = power
+            elif rule == "GOAL":
+                result["yagura"] = power
+            elif rule == "CLAM":
+                result["clam"] = power
+
+        return result
+
+    except:
+        return {
+            "error": "unexpected structure",
+            "keys": list(j.keys()) if isinstance(j, dict) else None
+        }
