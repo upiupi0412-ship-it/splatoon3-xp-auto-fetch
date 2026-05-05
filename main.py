@@ -11,17 +11,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GRAPHQL_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
+AUTH_URL = "https://accounts.nintendo.com/connect/1.0.0/api/token"
+SPLATNET_BASE = "https://api.lp1.av5ja.srv.nintendo.net"
 
-# =========================
-# root
-# =========================
-@app.get("/")
-def root():
-    return {"ok": True, "message": "stable splatnet api running"}
-
-# =========================
-# main
 # =========================
 @app.post("/xpower")
 async def xpower(req: Request):
@@ -33,136 +25,66 @@ async def xpower(req: Request):
         return {"ok": False, "error": "missing sessionToken"}
 
     try:
-        access_token = get_access_token(session_token)
+        access_token = get_access(session_token)
 
-        raw = fetch_xranking(access_token)
-
-        parsed = parse_safe(raw)
+        # 🔥 ここが本質（GraphQLではない）
+        data = fetch_splatnet_home(access_token)
 
         return {
             "ok": True,
-            "xpower": parsed,
-            "raw": raw
+            "raw": data,
+            "note": "this is real SplatNet response (not GraphQL)"
         }
 
     except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e)
-        }
+        return {"ok": False, "error": str(e)}
 
 # =========================
 # auth
 # =========================
-def get_access_token(session_token):
+def get_access(session_token):
 
     res = requests.post(
-        "https://accounts.nintendo.com/connect/1.0.0/api/token",
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "OnlineLounge/2.5.1 NASDKAPI Android"
-        },
+        AUTH_URL,
         json={
             "client_id": "71b963c1b7b6d119",
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer-session-token",
             "session_token": session_token
         },
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "OnlineLounge/2.5.1"
+        },
         timeout=10
     )
 
-    data = res.json()
+    j = res.json()
 
-    if "access_token" not in data:
-        raise Exception(f"auth failed: {data}")
+    if "access_token" not in j:
+        raise Exception(j)
 
-    return data["access_token"]
+    return j["access_token"]
 
 # =========================
-# GraphQL（安定版）
+# 🔥 実SplatNet通信（GraphQL回避）
 # =========================
-def fetch_xranking(access_token):
+def fetch_splatnet_home(access_token):
 
-    # ⚠️ 重要：
-    # hashは固定せず「失敗しても返す」運用にする
-
-    payload = {
-        "variables": {},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
-            }
-        }
-    }
+    url = f"{SPLATNET_BASE}/api/splatnet3/status"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Nintendo Switch; OnlineLounge)",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Referer": SPLATNET_BASE
     }
 
-    res = requests.post(
-        GRAPHQL_URL,
-        headers=headers,
-        json=payload,
-        timeout=20
-    )
+    res = requests.get(url, headers=headers)
 
-    # 🔥 ここ重要：絶対に壊さない
     try:
-        return {
-            "status": res.status_code,
-            "json": res.json()
-        }
+        return res.json()
     except:
         return {
             "status": res.status_code,
             "text": res.text
-        }
-
-# =========================
-# safe parser
-# =========================
-def parse_safe(data):
-
-    # まだ構造が未確定なので安全処理
-
-    if not isinstance(data, dict):
-        return None
-
-    # GraphQL成功時だけ解析
-    j = data.get("json", {})
-
-    try:
-        nodes = (
-            j["data"]["xRankingContainer"]["currentSeason"]["xRankingEntries"]["nodes"]
-        )
-
-        result = {
-            "area": None,
-            "yagura": None,
-            "hoko": None,
-            "clam": None
-        }
-
-        for n in nodes:
-            rule = n.get("rule")
-            power = n.get("xPower")
-
-            if rule == "AREA":
-                result["area"] = power
-            elif rule == "LOFT":
-                result["hoko"] = power
-            elif rule == "GOAL":
-                result["yagura"] = power
-            elif rule == "CLAM":
-                result["clam"] = power
-
-        return result
-
-    except:
-        return {
-            "error": "unexpected structure",
-            "keys": list(j.keys()) if isinstance(j, dict) else None
         }
