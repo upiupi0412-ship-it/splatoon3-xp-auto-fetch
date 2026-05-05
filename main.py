@@ -13,7 +13,7 @@ app.add_middleware(
 )
 
 API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
-GITHUB_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.py"
+UTILS_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.py"
 
 # =========================
 # debug
@@ -22,8 +22,8 @@ GITHUB_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.
 def root():
     return {"ok": True, "message": "XP API running"}
 
-@app.get("/hash")
-def get_hash():
+@app.get("/debug/hash")
+def debug_hash():
     return {"hash": get_latest_hash()}
 
 # =========================
@@ -41,7 +41,7 @@ async def xpower(req: Request):
     access_token = get_access_token(session_token)
 
     hash_value = get_latest_hash()
-    raw = fetch_xpower(access_token, hash_value)
+    raw = fetch_graphql(access_token, hash_value)
 
     return {
         "ok": True,
@@ -55,9 +55,9 @@ async def xpower(req: Request):
 def get_latest_hash():
 
     try:
-        text = requests.get(GITHUB_URL, timeout=10).text
+        text = requests.get(UTILS_URL, timeout=10).text
 
-        # XBattleHistoriesQuery を抽出
+        # XBattleHistoriesQuery
         match = re.search(
             r"'XBattleHistoriesQuery':\s*'([a-f0-9]{64})'",
             text
@@ -66,13 +66,14 @@ def get_latest_hash():
         if match:
             return match.group(1)
 
-        raise Exception("hash not found")
+        # fallback
+        return "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
 
     except Exception as e:
         return str(e)
 
 # =========================
-# Nintendo auth
+# auth
 # =========================
 def get_access_token(session_token):
 
@@ -97,9 +98,9 @@ def get_access_token(session_token):
     return data["access_token"]
 
 # =========================
-# GraphQL
+# GraphQL（安定ヘッダー版）
 # =========================
-def fetch_xpower(access_token, query_hash):
+def fetch_graphql(access_token, query_hash):
 
     payload = {
         "variables": {},
@@ -111,24 +112,25 @@ def fetch_xpower(access_token, query_hash):
         }
     }
 
-    res = requests.post(
-        API_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "*/*",
-            "Origin": "https://api.lp1.av5ja.srv.nintendo.net",
-            "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
-        },
-        json=payload,
-        timeout=15
-    )
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Nintendo Switch; OnlineLounge)",
+        "Accept": "*/*",
+        "Origin": "https://api.lp1.av5ja.srv.nintendo.net",
+        "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
+    }
 
+    res = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+
+    return {
+        "status": res.status_code,
+        "text": res.text,
+        "json": safe_json(res)
+    }
+
+def safe_json(res):
     try:
         return res.json()
     except:
-        return {
-            "error": "invalid_json",
-            "text": res.text
-        }
+        return None
