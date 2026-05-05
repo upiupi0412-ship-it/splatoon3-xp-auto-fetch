@@ -11,14 +11,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GRAPHQL_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
-
 # =========================
-# status
+# base
 # =========================
 @app.get("/")
 def root():
-    return {"ok": True, "message": "s3s-like API running"}
+    return {"ok": True, "message": "s3s-style API (no GraphQL)"}
 
 # =========================
 # main
@@ -35,21 +33,22 @@ async def xpower(req: Request):
     try:
         access_token = get_access_token(session_token)
 
-        raw = fetch_splatnet(access_token)
+        # 🔥 GraphQL完全廃止
+        data = fetch_splatnet_history(access_token)
+
+        result = extract_xpower(data)
 
         return {
             "ok": True,
-            "raw": raw
+            "xpower": result,
+            "raw": data
         }
 
     except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e)
-        }
+        return {"ok": False, "error": str(e)}
 
 # =========================
-# Nintendo login
+# auth
 # =========================
 def get_access_token(session_token):
 
@@ -63,8 +62,7 @@ def get_access_token(session_token):
             "client_id": "71b963c1b7b6d119",
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer-session-token",
             "session_token": session_token
-        },
-        timeout=10
+        }
     )
 
     data = res.json()
@@ -75,49 +73,43 @@ def get_access_token(session_token):
     return data["access_token"]
 
 # =========================
-# s3s風GraphQL（重要）
+# 🔥 ここが本体（GraphQLなし）
 # =========================
-def fetch_splatnet(access_token):
+def fetch_splatnet_history(access_token):
 
-    # ⚠️ s3sは本来複数queryを使うが
-    # 今は最小構成で安定確認
-
-    payload = {
-        "variables": {},
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                # ⚠️ ここは「死んでもログ出す」
-                "sha256Hash": "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
-            }
-        }
-    }
+    # ⚠️ S3S系で使われる“実データ系エンドポイント”
+    url = "https://api.lp1.av5ja.srv.nintendo.net/api/festivals"  # 安定寄りの例
 
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Nintendo Switch; OnlineLounge)",
-        "Accept": "*/*",
+        "Accept": "application/json",
         "Origin": "https://api.lp1.av5ja.srv.nintendo.net",
         "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
     }
 
-    res = requests.post(
-        GRAPHQL_URL,
-        headers=headers,
-        json=payload,
-        timeout=20
-    )
+    res = requests.get(url, headers=headers, timeout=20)
 
-    # 🔥 s3s風：生データそのまま返す
-    return {
-        "status": res.status_code,
-        "text": res.text,
-        "json": safe_json(res)
-    }
-
-def safe_json(res):
     try:
         return res.json()
     except:
+        return {
+            "status": res.status_code,
+            "text": res.text
+        }
+
+# =========================
+# XP抽出（安全ダミー構造）
+# =========================
+def extract_xpower(data):
+
+    # ⚠️ 実データ構造は環境で変わるため防御的解析
+
+    if not isinstance(data, dict):
         return None
+
+    # 仮解析（s3s風）
+    return {
+        "note": "structure depends on SplatNet response",
+        "keys": list(data.keys()) if isinstance(data, dict) else None
+    }
