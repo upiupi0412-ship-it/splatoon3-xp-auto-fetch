@@ -79,8 +79,6 @@ def get_access_token(session_token):
 # =========================
 def fetch_xpower(access_token):
 
-    # ⚠️ ここは「動作確認用ハッシュ」
-    # 壊れている可能性あり
     query_hash = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
 
     payload = {
@@ -93,20 +91,19 @@ def fetch_xpower(access_token):
         }
     }
 
-    res = requests.post(
-        API_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "User-Agent": "s3s-python"
-        },
-        json=payload
-    )
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+        "Origin": "https://api.lp1.av5ja.srv.nintendo.net",
+        "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
+    }
 
-    try:
-        return res.json()
-    except:
-        return {
-            "error": "invalid_json",
-            "text": res.text
-        }
+    res = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+
+    return {
+        "status": res.status_code,
+        "text": res.text,
+        "json": safe_json(res)
+    }
