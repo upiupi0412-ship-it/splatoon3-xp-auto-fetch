@@ -4,6 +4,9 @@ import requests
 
 app = FastAPI()
 
+# =========================
+# CORS
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,27 +17,29 @@ app.add_middleware(
 API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
 
 # =========================
-# ヘルスチェック
+# 起動確認（超重要）
 # =========================
+print("🔥 FASTAPI STARTED - main.py is running")
+
 @app.get("/")
 def root():
     return {"ok": True, "message": "XP API running"}
 
-# =========================
-# テスト用（GETでも確認できる）
-# =========================
-@app.get("/xpower")
-def xpower_get():
+@app.get("/whoami")
+def whoami():
     return {
-        "ok": False,
-        "error": "use POST /xpower"
+        "ok": True,
+        "file": "main.py active",
+        "status": "deployment confirmed"
     }
 
 # =========================
-# 本番（POST）
+# Xパワー取得
 # =========================
 @app.post("/xpower")
 async def xpower(req: Request):
+
+    print("🔥 /xpower HIT")
 
     body = await req.json()
     session_token = body.get("sessionToken")
@@ -42,20 +47,27 @@ async def xpower(req: Request):
     if not session_token:
         return {"ok": False, "error": "missing sessionToken"}
 
-    access_token = get_access_token(session_token)
-    raw = fetch_xpower(access_token)
+    try:
+        access_token = get_access_token(session_token)
+        raw = fetch_xpower(access_token)
 
-    return {
-        "ok": True,
-        "debug": {
-            "has_data": "data" in raw,
-            "has_errors": "errors" in raw
-        },
-        "raw": raw
-    }
+        return {
+            "ok": True,
+            "debug": {
+                "has_data": "data" in raw if isinstance(raw, dict) else False,
+                "has_errors": "errors" in raw if isinstance(raw, dict) else False
+            },
+            "raw": raw
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 # =========================
-# 認証
+# Nintendo Token
 # =========================
 def get_access_token(session_token):
 
@@ -75,12 +87,12 @@ def get_access_token(session_token):
     data = res.json()
 
     if "access_token" not in data:
-        raise Exception(data)
+        raise Exception(f"auth failed: {data}")
 
     return data["access_token"]
 
 # =========================
-# GraphQL（生ログ確認用）
+# GraphQL（まず安全版）
 # =========================
 def fetch_xpower(access_token):
 
@@ -106,18 +118,10 @@ def fetch_xpower(access_token):
         json=payload
     )
 
-    return {
-        "status": res.status_code,
-        "text": res.text,
-        "json": safe_json(res)
-    }
-
-def safe_json(res):
     try:
         return res.json()
     except:
-        return None
-
-@app.get("/debug")
-def debug():
-    return {"ok": True, "file": "THIS IS NEW CODE"}
+        return {
+            "error": "invalid_json",
+            "text": res.text
+        }
