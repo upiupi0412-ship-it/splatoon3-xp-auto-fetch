@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import re
 
 app = FastAPI()
 
@@ -12,19 +11,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
-UTILS_URL = "https://raw.githubusercontent.com/frozenpandaman/s3s/master/utils.py"
+GRAPHQL_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
 
 # =========================
-# debug
+# status
 # =========================
 @app.get("/")
 def root():
-    return {"ok": True, "message": "XP API running"}
-
-@app.get("/debug/hash")
-def debug_hash():
-    return {"hash": get_latest_hash()}
+    return {"ok": True, "message": "s3s-like API running"}
 
 # =========================
 # main
@@ -38,42 +32,24 @@ async def xpower(req: Request):
     if not session_token:
         return {"ok": False, "error": "missing sessionToken"}
 
-    access_token = get_access_token(session_token)
-
-    hash_value = get_latest_hash()
-    raw = fetch_graphql(access_token, hash_value)
-
-    return {
-        "ok": True,
-        "used_hash": hash_value,
-        "raw": raw
-    }
-
-# =========================
-# GitHubから最新hash取得
-# =========================
-def get_latest_hash():
-
     try:
-        text = requests.get(UTILS_URL, timeout=10).text
+        access_token = get_access_token(session_token)
 
-        # XBattleHistoriesQuery
-        match = re.search(
-            r"'XBattleHistoriesQuery':\s*'([a-f0-9]{64})'",
-            text
-        )
+        raw = fetch_splatnet(access_token)
 
-        if match:
-            return match.group(1)
-
-        # fallback
-        return "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
+        return {
+            "ok": True,
+            "raw": raw
+        }
 
     except Exception as e:
-        return str(e)
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 # =========================
-# auth
+# Nintendo login
 # =========================
 def get_access_token(session_token):
 
@@ -87,7 +63,8 @@ def get_access_token(session_token):
             "client_id": "71b963c1b7b6d119",
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer-session-token",
             "session_token": session_token
-        }
+        },
+        timeout=10
     )
 
     data = res.json()
@@ -98,16 +75,20 @@ def get_access_token(session_token):
     return data["access_token"]
 
 # =========================
-# GraphQL（安定ヘッダー版）
+# s3s風GraphQL（重要）
 # =========================
-def fetch_graphql(access_token, query_hash):
+def fetch_splatnet(access_token):
+
+    # ⚠️ s3sは本来複数queryを使うが
+    # 今は最小構成で安定確認
 
     payload = {
         "variables": {},
         "extensions": {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": query_hash
+                # ⚠️ ここは「死んでもログ出す」
+                "sha256Hash": "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
             }
         }
     }
@@ -121,8 +102,14 @@ def fetch_graphql(access_token, query_hash):
         "Referer": "https://api.lp1.av5ja.srv.nintendo.net/"
     }
 
-    res = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+    res = requests.post(
+        GRAPHQL_URL,
+        headers=headers,
+        json=payload,
+        timeout=20
+    )
 
+    # 🔥 s3s風：生データそのまま返す
     return {
         "status": res.status_code,
         "text": res.text,
