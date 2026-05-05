@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import json
 
 app = FastAPI()
 
@@ -29,36 +28,44 @@ RULE_MAP = {
 }
 
 # =========================
-# エンドポイント
+# ヘルスチェック
+# =========================
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "message": "XP API running"
+    }
+
+# =========================
+# メインAPI
 # =========================
 @app.post("/xpower")
 async def xpower(req: Request):
+
     body = await req.json()
     session_token = body.get("sessionToken")
 
     if not session_token:
-        return {"ok": False, "error": "missing sessionToken"}
+        return {
+            "ok": False,
+            "error": "missing sessionToken"
+        }
 
     try:
-        # =========================
-        # STEP1: access_token取得
-        # =========================
         access_token = get_access_token(session_token)
+        raw = fetch_xpower(access_token)
 
-        # =========================
-        # STEP2: SplatNet GraphQL
-        # =========================
-        data = fetch_xpower(access_token)
-
-        # =========================
-        # STEP3: 整形
-        # =========================
-        result = parse_xpower(data)
+        parsed = parse_xpower(raw)
 
         return {
             "ok": True,
-            **result,
-            "raw": data
+            **parsed,
+            "debug": {
+                "has_data": "data" in raw,
+                "has_errors": "errors" in raw,
+            },
+            "raw": raw
         }
 
     except Exception as e:
@@ -68,9 +75,10 @@ async def xpower(req: Request):
         }
 
 # =========================
-# Nintendo認証
+# Nintendo auth
 # =========================
 def get_access_token(session_token):
+
     res = requests.post(
         "https://accounts.nintendo.com/connect/1.0.0/api/token",
         headers={
@@ -92,7 +100,7 @@ def get_access_token(session_token):
     return data["access_token"]
 
 # =========================
-# Xパワー取得（GraphQL）
+# GraphQL取得
 # =========================
 def fetch_xpower(access_token):
 
@@ -118,18 +126,36 @@ def fetch_xpower(access_token):
         json=payload
     )
 
-    data = res.json()
-
-    return data
+    try:
+        return res.json()
+    except:
+        return {
+            "error": "invalid_json",
+            "text": res.text
+        }
 
 # =========================
-# XP整形
+# パース（壊れにくい版）
 # =========================
 def parse_xpower(data):
 
+    # ❗GraphQLエラー優先検出
+    if "errors" in data:
+        return {
+            "area": None,
+            "yagura": None,
+            "hoko": None,
+            "clam": None,
+            "error": data["errors"]
+        }
+
     try:
         nodes = (
-            data["data"]["xRankingContainer"]["currentSeason"]["xRankingEntries"]["nodes"]
+            data.get("data", {})
+                .get("xRankingContainer", {})
+                .get("currentSeason", {})
+                .get("xRankingEntries", {})
+                .get("nodes", [])
         )
 
         result = {
@@ -148,10 +174,12 @@ def parse_xpower(data):
 
         return result
 
-    except Exception:
+    except Exception as e:
         return {
             "area": None,
             "yagura": None,
             "hoko": None,
-            "clam": None
+            "clam": None,
+            "error": f"parse_error: {str(e)}",
+            "raw_sample": str(data)[:500]
         }
