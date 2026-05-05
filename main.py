@@ -117,3 +117,7 @@ def safe_json(res):
         return res.json()
     except:
         return None
+
+@app.get("/debug")
+def debug():
+    return {"ok": True, "file": "THIS IS NEW CODE"}
