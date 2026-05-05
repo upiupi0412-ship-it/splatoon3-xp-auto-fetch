@@ -13,17 +13,26 @@ app.add_middleware(
 
 API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
 
-RULE_MAP = {
-    "AREA": "area",
-    "GOAL": "yagura",
-    "LOFT": "hoko",
-    "CLAM": "clam"
-}
-
+# =========================
+# ヘルスチェック
+# =========================
 @app.get("/")
 def root():
     return {"ok": True, "message": "XP API running"}
 
+# =========================
+# テスト用（GETでも確認できる）
+# =========================
+@app.get("/xpower")
+def xpower_get():
+    return {
+        "ok": False,
+        "error": "use POST /xpower"
+    }
+
+# =========================
+# 本番（POST）
+# =========================
 @app.post("/xpower")
 async def xpower(req: Request):
 
@@ -34,17 +43,20 @@ async def xpower(req: Request):
         return {"ok": False, "error": "missing sessionToken"}
 
     access_token = get_access_token(session_token)
-
     raw = fetch_xpower(access_token)
 
-    # 🔥 超重要：まず生ログをそのまま返す
     return {
         "ok": True,
-        "access_ok": True,
+        "debug": {
+            "has_data": "data" in raw,
+            "has_errors": "errors" in raw
+        },
         "raw": raw
     }
 
-
+# =========================
+# 認証
+# =========================
 def get_access_token(session_token):
 
     res = requests.post(
@@ -67,10 +79,11 @@ def get_access_token(session_token):
 
     return data["access_token"]
 
-
+# =========================
+# GraphQL（生ログ確認用）
+# =========================
 def fetch_xpower(access_token):
 
-    # ⚠️ここが犯人候補
     query_hash = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
 
     payload = {
@@ -94,11 +107,10 @@ def fetch_xpower(access_token):
     )
 
     return {
-        "status_code": res.status_code,
+        "status": res.status_code,
         "text": res.text,
         "json": safe_json(res)
     }
-
 
 def safe_json(res):
     try:
