@@ -1,167 +1,157 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 import requests
-import os
+import json
 
 app = FastAPI()
 
 # =========================
-# 🔐 環境変数から取得
+# CORS（Worker / TurboWarp用）
 # =========================
-SESSION_TOKEN = os.getenv("SESSION_TOKEN")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-if not SESSION_TOKEN:
-    raise Exception("SESSION_TOKEN が設定されていません")
-
-# =========================
-# 設定
-# =========================
-F_API_URL = "https://nxapi-znca-api.fancy.org.uk/api/znca/f"
-GRAPHQL_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
-
-HASH = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
-
-session = requests.Session()
+API_URL = "https://api.lp1.av5ja.srv.nintendo.net/api/graphql"
 
 # =========================
-# ① session_token → id_token
+# ルール対応
 # =========================
-def get_id_token():
-    url = "https://accounts.nintendo.com/connect/1.0.0/api/session_token"
-
-    headers = {
-        "User-Agent": "OnlineLounge/2.5.1 NASDKAPI Android"
-    }
-
-    cookies = {
-        "session_token": SESSION_TOKEN
-    }
-
-    r = session.post(url, headers=headers, cookies=cookies)
-    data = r.json()
-
-    if "id_token" not in data:
-        raise Exception("id_token取得失敗")
-
-    return data["id_token"]
-
+RULE_MAP = {
+    "AREA": "area",
+    "GOAL": "yagura",
+    "LOFT": "hoko",
+    "CLAM": "clam"
+}
 
 # =========================
-# ② f API
+# エンドポイント
 # =========================
-def get_f(id_token):
-    body = {
-        "token": id_token,
-        "hash_method": 1
-    }
+@app.post("/xpower")
+async def xpower(req: Request):
+    body = await req.json()
+    session_token = body.get("sessionToken")
 
-    r = session.post(F_API_URL, json=body)
-    data = r.json()
-
-    if "f" not in data:
-        raise Exception("f API失敗")
-
-    return data
-
-
-# =========================
-# ③ gToken取得
-# =========================
-def get_gtoken(id_token, f_data):
-    url = "https://api-lp1.znc.srv.nintendo.net/v3/Account/Login"
-
-    body = {
-        "parameter": {
-            "f": f_data["f"],
-            "naIdToken": id_token,
-            "timestamp": f_data["timestamp"],
-            "requestId": f_data["request_id"]
-        }
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "com.nintendo.znca/2.5.1",
-        "x-productversion": "2.5.1",
-        "x-platform": "Android"
-    }
-
-    r = session.post(url, json=body, headers=headers)
-    data = r.json()
+    if not session_token:
+        return {"ok": False, "error": "missing sessionToken"}
 
     try:
-        return data["result"]["webApiServerCredential"]["accessToken"]
-    except Exception:
-        raise Exception(f"gToken取得失敗: {data}")
+        # =========================
+        # STEP1: access_token取得
+        # =========================
+        access_token = get_access_token(session_token)
 
+        # =========================
+        # STEP2: SplatNet GraphQL
+        # =========================
+        data = fetch_xpower(access_token)
+
+        # =========================
+        # STEP3: 整形
+        # =========================
+        result = parse_xpower(data)
+
+        return {
+            "ok": True,
+            **result,
+            "raw": data
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 # =========================
-# ④ bulletToken取得
+# Nintendo認証
 # =========================
-def get_bullet(gtoken):
-    url = "https://api.lp1.av5ja.srv.nintendo.net/api/bullet_tokens"
+def get_access_token(session_token):
+    res = requests.post(
+        "https://accounts.nintendo.com/connect/1.0.0/api/token",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "OnlineLounge/2.5.1 NASDKAPI Android"
+        },
+        json={
+            "client_id": "71b963c1b7b6d119",
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer-session-token",
+            "session_token": session_token
+        }
+    )
 
-    headers = {
-        "Authorization": f"Bearer {gtoken}",
-        "User-Agent": "com.nintendo.znca/2.5.1",
-        "Content-Type": "application/json"
-    }
+    data = res.json()
 
-    r = session.post(url, headers=headers)
-    data = r.json()
+    if "access_token" not in data:
+        raise Exception(f"auth failed: {data}")
 
-    if "bulletToken" not in data:
-        raise Exception(f"bulletToken取得失敗: {data}")
-
-    return data["bulletToken"]
-
+    return data["access_token"]
 
 # =========================
-# ⑤ Xパワー取得
+# Xパワー取得（GraphQL）
 # =========================
-def get_xpower(bullet):
-    headers = {
-        "Authorization": f"Bearer {bullet}",
-        "Accept-Language": "ja-JP",
-        "User-Agent": "Mozilla/5.0",
-        "X-Web-View-Ver": "10.0.0-88706e32",
-        "Content-Type": "application/json",
-        "x-nacountry": "JP",
-        "x-language": "ja-JP",
-        "x-timezone": "Asia/Tokyo",
-    }
+def fetch_xpower(access_token):
+
+    query_hash = "eb5996a12705c2e94813a62e05c0dc419aad2811b8d49d53e5732290105559cb"
 
     payload = {
         "variables": {},
         "extensions": {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": HASH
+                "sha256Hash": query_hash
             }
         }
     }
 
-    r = session.post(GRAPHQL_URL, headers=headers, json=payload)
-    data = r.json()
+    res = requests.post(
+        API_URL,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "s3s-python"
+        },
+        json=payload
+    )
 
-    if "data" not in data:
-        raise Exception(f"Xパワー取得失敗: {data}")
+    data = res.json()
 
     return data
 
+# =========================
+# XP整形
+# =========================
+def parse_xpower(data):
 
-# =========================
-# APIエンドポイント
-# =========================
-@app.get("/xpower")
-def xpower():
     try:
-        id_token = get_id_token()
-        f_data = get_f(id_token)
-        gtoken = get_gtoken(id_token, f_data)
-        bullet = get_bullet(gtoken)
-        data = get_xpower(bullet)
+        nodes = (
+            data["data"]["xRankingContainer"]["currentSeason"]["xRankingEntries"]["nodes"]
+        )
 
-        return data
+        result = {
+            "area": None,
+            "yagura": None,
+            "hoko": None,
+            "clam": None
+        }
 
-    except Exception as e:
-        return {"error": str(e)}
+        for n in nodes:
+            rule = n.get("rule")
+            power = n.get("xPower")
+
+            if rule in RULE_MAP:
+                result[RULE_MAP[rule]] = power
+
+        return result
+
+    except Exception:
+        return {
+            "area": None,
+            "yagura": None,
+            "hoko": None,
+            "clam": None
+        }
